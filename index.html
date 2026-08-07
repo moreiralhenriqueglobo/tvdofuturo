@@ -172,6 +172,7 @@ input:focus,select:focus,textarea:focus{border-color:#93c5fd;box-shadow:0 0 0 4p
 <script>
 // ─── Estado global de ocupação ───
 var ocupacao = {};
+var LIMITE_POR_HORARIO = 5;
 
 // ─── Elementos ───
 var dataHidden  = document.getElementById('dataHidden');
@@ -237,16 +238,22 @@ function generateMonthBlock(year, month) {
       el.className = 'day';
       el.textContent = day;
       
-      var horariosOcupados = ocupacao[formatted] || [];
-      var diaLotado = horariosOcupados.length >= 3;
+      var horariosDoDia = ocupacao[formatted] || {};
+
+      var horariosDisponiveis = ['10:00', '11:00', '12:00'].filter(function(hora) {
+        var qtdAtual = Number(horariosDoDia[hora]) || 0;
+        return qtdAtual < LIMITE_POR_HORARIO;
+      });
+
+      var diaLotado = horariosDisponiveis.length === 0;
       var diaPassado = date < hoje;
-      
+
       if (!allowed.includes(dayWeek) || diaLotado || diaPassado) {
         el.classList.add('disabled');
       } else {
         el.addEventListener('click', function(e) {
           e.stopPropagation();
-          selecionarData(formatted, horariosOcupados);
+          selecionarData(formatted);
         });
       }
       
@@ -309,15 +316,70 @@ function generateCalendar() {
   calendar.appendChild(monthsContainer);
 }
 
-function selecionarData(formatted, horariosOcupados) {
+function selecionarData(formatted) {
   dataHidden.value = formatted;
   trigger.textContent = formatted;
   trigger.classList.add('filled');
+
+  horaSelect.value = '';
+  resetarQuantidadeVisitantes();
+
+  var horariosDoDia = ocupacao[formatted] || {};
+
   Array.from(horaSelect.options).forEach(function(opt) {
     if (!opt.value) return;
-    opt.disabled = (horariosOcupados || []).includes(opt.value);
+
+    var qtdAtual = Number(horariosDoDia[opt.value]) || 0;
+    opt.disabled = qtdAtual >= LIMITE_POR_HORARIO;
   });
+
   fecharCalendario();
+}
+
+function resetarQuantidadeVisitantes() {
+  qtdSelect.innerHTML = '<option value="">Selecione</option>';
+  guestList.innerHTML = '';
+  guestBox.classList.add('hidden');
+}
+
+function atualizarOpcoesQuantidadeVisitantes() {
+  resetarQuantidadeVisitantes();
+
+  if (!dataHidden.value || !horaSelect.value) {
+    return;
+  }
+
+  var dataSelecionada = dataHidden.value;
+  var horaSelecionada = horaSelect.value;
+
+  var qtdAtual = 0;
+
+  if (
+    ocupacao[dataSelecionada] &&
+    ocupacao[dataSelecionada][horaSelecionada]
+  ) {
+    qtdAtual = Number(ocupacao[dataSelecionada][horaSelecionada]) || 0;
+  }
+
+  var vagasRestantes = LIMITE_POR_HORARIO - qtdAtual;
+
+  if (vagasRestantes <= 0) {
+    normMsg('Este horário já está lotado. Selecione outro horário.', 'error');
+    horaSelect.value = '';
+    return;
+  }
+
+  for (var i = 1; i <= vagasRestantes; i++) {
+    var opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = i;
+    qtdSelect.appendChild(opt);
+  }
+
+  normMsg(
+    'Este horário possui ' + vagasRestantes + ' vaga(s) disponível(is).',
+    'notice'
+  );
 }
 
 function abrirCalendario() {
@@ -339,6 +401,9 @@ document.addEventListener('click', function(e) {
 
 window.addEventListener('scroll', fecharCalendario, { passive: true });
 
+horaSelect.addEventListener('change', function() {
+  atualizarOpcoesQuantidadeVisitantes();
+});
 // Convidados
 qtdSelect.addEventListener('change', function() {
   var n = parseInt(qtdSelect.value || '1', 10);
@@ -372,6 +437,26 @@ formEl.addEventListener('submit', async function(e) {
   var count = parseInt(qtdSelect.value || '0', 10);
   if (!count || count < 1 || count > 5) { normMsg('Selecione entre 1 e 5 visitantes.', 'error'); return; }
   if (!dataHidden.value || !horaSelect.value) { normMsg('Preencha data e horário.', 'error'); return; }
+
+  var qtdAtualNoHorario = 0;
+
+  if (
+    ocupacao[dataHidden.value] &&
+    ocupacao[dataHidden.value][horaSelect.value]
+  ) {
+    qtdAtualNoHorario = Number(ocupacao[dataHidden.value][horaSelect.value]) || 0;
+  }
+
+  var vagasRestantesNoHorario = LIMITE_POR_HORARIO - qtdAtualNoHorario;
+
+  if (count > vagasRestantesNoHorario) {
+    normMsg(
+      'Este horário possui apenas ' + vagasRestantesNoHorario + ' vaga(s) disponível(is).',
+      'error'
+    );
+    return;
+  }
+
   var wd = new Date(dataHidden.value + 'T00:00:00').getDay();
   if (!allowed.includes(wd)) { normMsg('Data inválida. Use terça a quinta.', 'error'); return; }
 
@@ -403,9 +488,13 @@ var visitasCarregadas = new Promise(function(resolve) {
     scriptLoadingStatus = 'success';
     if (typeof visitas !== 'undefined') {
       visitas.forEach(function(v) {
-        if (!v.data_visita) return;
-        if (!ocupacao[v.data_visita]) ocupacao[v.data_visita] = [];
-        ocupacao[v.data_visita].push(v.hora_visita);
+        if (!v.data_visita || !v.hora_visita) return;
+
+        if (!ocupacao[v.data_visita]) {
+          ocupacao[v.data_visita] = {};
+        }
+
+        ocupacao[v.data_visita][v.hora_visita] = Number(v.qtd_visitas) || 0;
       });
     }
     resolve();
@@ -431,7 +520,7 @@ trigger.addEventListener('click', async function(e) {
 </script>
 
 <script>
-const PA_ENDPOINT = 'https://script.google.com/macros/s/AKfycbyAbL6PrNFescOTS6lns2k1rV1HcgE_t3o0nQGHWJr_Icq_kK89XqTZLZwhI7lwoIJo/exec';
+const PA_ENDPOINT = 'https://script.google.com/macros/s/AKfycbzn2EKbPts_pVobDj1iVd2EBltM3ch_AArIDZwu8B4N94haRa8CPi0jj2SvQqM291ch/exec';
 async function sendToPowerAutomate(payload) {
   await fetch(PA_ENDPOINT, {
     method: 'POST',
@@ -439,7 +528,7 @@ async function sendToPowerAutomate(payload) {
     body: JSON.stringify(payload)
   });
 }
-  console.log('atualizado 260715161500')
+  console.log('atualizado 260807163510d')
 </script>
 </body>
 </html>
